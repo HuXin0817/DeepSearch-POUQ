@@ -30,3 +30,12 @@
 *.exe
 *.out
 *.app
+
+.idea
+cmake-build-debug-ubuntu2204
+cmake-build-release-gcc-14
+cmake-build-debug-clang-16
+cmake-build-release-clang-16
+cmake-build-debug
+python_bindings/build
+python_bindings/deepsearch.egg-info
