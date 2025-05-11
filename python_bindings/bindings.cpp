@@ -54,22 +54,20 @@ void set_num_threads(int) {
 }
 #endif
 
-// 使用PIMPL模式隐藏实现细节
-class Graph {
- private:
-  std::unique_ptr<deepsearch::Graph<int>> graph_;
+struct Graph {
+  deepsearch::Graph<int> graph;
 
- public:
-  Graph() : graph_(std::make_unique<deepsearch::Graph<int>>()) {}
+  Graph() = default;
 
-  explicit Graph(const std::string& filename)
-      : graph_(std::make_unique<deepsearch::Graph<int>>()) {
-    graph_->load(filename);
-  }
+  explicit Graph(const Graph& rhs) : graph(rhs.graph) {}
 
-  void save(const std::string& filename) const { graph_->save(filename); }
+  explicit Graph(const std::string& filename) { graph.load(filename); }
 
-  const deepsearch::Graph<int>& impl() const { return *graph_; }
+  explicit Graph(const deepsearch::Graph<int>& graph) : graph(graph) {}
+
+  void save(const std::string& filename) { graph.save(filename); }
+
+  void load(const std::string& filename) { graph.load(filename); }
 };
 
 class Index {
@@ -95,7 +93,7 @@ class Index {
                                            std::to_string(index_->Dim()) +
                                            ", got " + std::to_string(dim));
     index_->Build(data, n);
-    return Graph();
+    return Graph(index_->GetGraph());
   }
 };
 
@@ -106,7 +104,7 @@ class Searcher {
  public:
   Searcher(const Graph& graph, py::object data, const std::string& metric,
            int level)
-      : searcher_(deepsearch::create_searcher(graph.impl(), metric, level)) {
+      : searcher_(deepsearch::create_searcher(graph.graph, metric, level)) {
     auto [n, dim, ptr] = get_array_data(data);
     data_dim_ = dim;
     searcher_->SetData(ptr, n, dim);
@@ -114,30 +112,31 @@ class Searcher {
 
   py::array_t<int> search(py::object query, int k) {
     py::array_t<float, py::array::c_style | py::array::forcecast> items(query);
-    int *ids;
+    int* ids;
     ids = new int[k];
     searcher_->Search(items.data(0), k, ids);
-    py::capsule free_when_done(ids, [](void *f) { delete[] f; });
+    py::capsule free_when_done(ids, [](void* f) { delete[] f; });
     return py::array_t<int>({k}, {sizeof(int)}, ids, free_when_done);
 
-//    auto [nq, dim, qdata] = get_array_data(query);
-//    THROW_IF_NOT(dim == data_dim_, "Query dimension mismatch. Expected " +
-//                                       std::to_string(data_dim_));
-//
-//    auto* ids = new int[nq * k];  // 使用原生数组避免unique_ptr的释放问题
-//    py::capsule free_when_done(ids,
-//                               [](void* f) { delete[] static_cast<int*>(f); });
-//
-//    searcher_->Search(qdata, k, ids);
-//
-//    return py::array_t<int>(k, ids);
+    //    auto [nq, dim, qdata] = get_array_data(query);
+    //    THROW_IF_NOT(dim == data_dim_, "Query dimension mismatch. Expected " +
+    //                                       std::to_string(data_dim_));
+    //
+    //    auto* ids = new int[nq * k];  // 使用原生数组避免unique_ptr的释放问题
+    //    py::capsule free_when_done(ids,
+    //                               [](void* f) { delete[]
+    //                               static_cast<int*>(f); });
+    //
+    //    searcher_->Search(qdata, k, ids);
+    //
+    //    return py::array_t<int>(k, ids);
   }
 
   py::array_t<int> batch_search(py::object query, int k, int num_threads = 0) {
     auto query_data = get_array_data(query);
-    auto nq = std::get<0>(query_data);      // 或根据实际返回类型调整
+    auto nq = std::get<0>(query_data);  // 或根据实际返回类型调整
     auto dim = std::get<1>(query_data);
-    auto qdata = std::get<2>(query_data);   // 假设 qdata 是 float* 类型
+    auto qdata = std::get<2>(query_data);  // 假设 qdata 是 float* 类型
 
     THROW_IF_NOT(dim == data_dim_, "Query dimension mismatch. Expected " +
                                        std::to_string(data_dim_));
@@ -227,9 +226,7 @@ PYBIND11_MODULE(deepsearch, m) {
       .def(py::init<>())
       .def(py::init<const std::string&>(), py::arg("filename"))
       .def("save", &Graph::save, py::arg("filename"), "Save graph to file")
-      .def(
-          "load", [](Graph& g, const std::string& f) { g = Graph(f); },
-          py::arg("filename"), "Load graph from file");
+      .def("load", &Graph::load, py::arg("filename"), "Load graph from file");
 
   py::class_<Index>(m, "Index")
       .def(py::init<const std::string&, int, const std::string&, int, int>(),
