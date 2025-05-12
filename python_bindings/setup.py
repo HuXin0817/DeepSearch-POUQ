@@ -89,6 +89,10 @@ class BuildExt(build_ext):
             if not IS_WINDOWS:
                 ext.extra_compile_args.append(f'-DVERSION_INFO="{self.distribution.get_version()}"')
                 ext.extra_compile_args.append('-fvisibility=hidden')
+                ext.extra_compile_args.extend([
+                    '-Ofast',  # 最高优化级别（注意浮点精度问题）
+                    '-fPIC',  # 生成位置无关代码
+                ])
             else:
                 ext.extra_compile_args.append(f'/DVERSION_INFO=\\"{self.distribution.get_version()}\\"')
 
