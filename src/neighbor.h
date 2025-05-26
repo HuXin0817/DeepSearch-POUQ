@@ -6,7 +6,7 @@
 #include <cstring>
 #include <vector>
 
-#include "memory.h"
+#include "allocator.h"
 
 namespace deepsearch {
 

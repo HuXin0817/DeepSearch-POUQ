@@ -3,10 +3,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <vector>
 
+#include "allocator.h"
 #include "hnsw/HnswInitializer.h"
-#include "memory.h"
 #include "simd/distance.h"
 
 namespace deepsearch {

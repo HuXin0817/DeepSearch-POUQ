@@ -3,8 +3,6 @@
 #include <fstream>
 #include <vector>
 
-#include "memory.h"
-
 namespace deepsearch {
 
 struct HnswInitializer {
