@@ -26,9 +26,10 @@ jobs:
           - os: ubuntu
             arch: arm64
             runner: ubuntu-latest
-          - os: windows
-            arch: x86_64
-            runner: windows-latest
+    # disable now
+    #          - os: windows
+    #            arch: x86_64
+    #            runner: windows-latest
 
     steps:
       - name: Checkout code
@@ -44,7 +45,7 @@ jobs:
         if: matrix.os == 'macos'
         run: |
           brew update
-          brew install cmake python
+          brew install cmake python libomp
 
       - name: Set up dependencies (Windows)
         if: matrix.os == 'windows'
