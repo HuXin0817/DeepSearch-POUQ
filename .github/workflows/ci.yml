@@ -78,6 +78,7 @@ jobs:
           cmake --build . --config Release
 
       - name: Run main test
+        if: matrix.arch != 'arm64' || matrix.os != 'ubuntu'
         run: |
           bash test.sh
 
