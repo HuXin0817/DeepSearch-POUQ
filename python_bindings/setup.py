@@ -1,239 +1,144 @@
 import os
 import platform
-import sys
+from distutils.errors import CompileError, LinkError
 
 import numpy as np
 import pybind11
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 
-
-# 自动收集 src 目录下的所有 C++ 源文件
-def find_sources(src_dir):
-    sources = []
-    for root, dirs, files in os.walk(src_dir):
-        for file in files:
-            if file.endswith(".cpp"):
-                sources.append(os.path.join(root, file))
-    return sources
-
-
-# 核心配置
+# 项目信息
 __version__ = '0.1.0'
 MODULE_NAME = 'deepsearch'
-BINDINGS_DIR = "python_bindings"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SRC_DIR = os.path.join(PROJECT_ROOT, "src")
+BINDINGS_DIR = os.path.join(PROJECT_ROOT, "python_bindings")
 
-# 获取 src 目录的绝对路径（根据实际位置调整）
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BINDINGS_DIR = os.path.join(project_root, BINDINGS_DIR)
-cpp_src_dir = os.path.join(project_root, "src")
-cpp_sources = find_sources(cpp_src_dir)
+# 平台信息
+IS_WINDOWS = platform.system() == "Windows"
+IS_MACOS = platform.system() == "Darwin"
+IS_LINUX = platform.system() == "Linux"
 
-# 包含目录配置
-include_dirs = [
-    pybind11.get_include(),
-    np.get_include(),
-    os.path.join(project_root, "src"),  # 确保头文件路径正确
-]
 
-# 绑定文件 + 所有 C++ 源文件
-source_files = [
-    os.path.join(BINDINGS_DIR, 'bindings.cpp'),
-]
-source_files.extend(cpp_sources)
+def find_cpp_sources(directory):
+    return [
+        os.path.join(root, file)
+        for root, _, files in os.walk(directory)
+        for file in files if file.endswith(".cpp")
+    ]
 
-# 编译模块配置
-ext_modules = [
-    Extension(
-        MODULE_NAME,
-        sources=source_files,
-        include_dirs=include_dirs,
-        language='c++',
-        extra_compile_args=['-std=c++17', '-O3'],  # 添加优化和 C++17 支持
-    ),
-]
 
-# 系统检测
-IS_LINUX = platform.system() == 'Linux'
-IS_MACOS = platform.system() == 'Darwin'
-IS_WINDOWS = platform.system() == 'Windows'
+def get_openmp_flags():
+    if IS_WINDOWS:
+        return ["/openmp"], []
+    elif IS_MACOS:
+        return ["-Xpreprocessor", "-fopenmp"], ["-lomp"]
+    elif IS_LINUX:
+        return ["-fopenmp"], ["-fopenmp"]
+    return [], []
 
 
 class BuildExt(build_ext):
-    """自动检测并配置 OpenMP 支持，处理 macOS 的 libomp 路径"""
-    user_options = build_ext.user_options + [
-        ('disable-openmp', None, "Disable OpenMP support"),
-    ]
+    user_options = build_ext.user_options + [('disable-openmp', None, "Disable OpenMP support")]
 
     def initialize_options(self):
         super().initialize_options()
         self.disable_openmp = False
-        self.openmp_include_dir = None
-        self.openmp_library_dir = None
 
     def finalize_options(self):
         super().finalize_options()
-        # 从环境变量中读取自定义 OpenMP 路径
         self.openmp_include_dir = os.environ.get('OPENMP_INCLUDE_DIR')
         self.openmp_library_dir = os.environ.get('OPENMP_LIBRARY_DIR')
+        if IS_MACOS:
+            if not self.openmp_include_dir:
+                self.openmp_include_dir = '/opt/homebrew/opt/libomp/include'
+            if not self.openmp_library_dir:
+                self.openmp_library_dir = '/opt/homebrew/opt/libomp/lib'
 
     def build_extensions(self):
-        # 设置 C++ 标准
-        cpp_std = '-std=c++17'
-        if IS_WINDOWS:
-            cpp_std = '/std:c++17' if sys.version_info >= (3, 9) else '/std:c++latest'
+        cpp_flag = '/std:c++17' if IS_WINDOWS else '-std=c++17'
 
-        # 公共编译选项
         for ext in self.extensions:
-            ext.extra_compile_args.append(cpp_std)
+            ext.extra_compile_args = [cpp_flag]
+            ext.include_dirs.extend([
+                pybind11.get_include(),
+                np.get_include(),
+                SRC_DIR
+            ])
             if not IS_WINDOWS:
-                ext.extra_compile_args.append(f'-DVERSION_INFO="{self.distribution.get_version()}"')
-                ext.extra_compile_args.append('-fvisibility=hidden')
-                ext.extra_compile_args.extend([
-                    '-Ofast',  # 最高优化级别（注意浮点精度问题）
-                    '-fPIC',  # 生成位置无关代码
-                ])
+                ext.extra_compile_args += [
+                    f'-DVERSION_INFO="{self.distribution.get_version()}"',
+                    '-fvisibility=hidden'
+                ]
             else:
-                ext.extra_compile_args.append(f'/DVERSION_INFO=\\"{self.distribution.get_version()}\\"')
+                ext.extra_compile_args += [f'/DVERSION_INFO=\\"{self.distribution.get_version()}\\"']
 
-        # OpenMP 支持检测
-        openmp_supported = False
-        if not self.disable_openmp:
-            openmp_supported = self._check_openmp_support()
-            print(f"OpenMP support: {'Enabled' if openmp_supported else 'Disabled'}")
+            if not self.disable_openmp and self._check_openmp():
+                compile_flags, link_flags = get_openmp_flags()
+                ext.extra_compile_args += compile_flags
+                ext.extra_link_args += link_flags
 
-        # 配置 OpenMP 选项
-        if openmp_supported:
-            self._add_openmp_flags()
+                # 包含和库路径设置
+                if self.openmp_include_dir:
+                    ext.include_dirs.append(self.openmp_include_dir)
+                elif IS_MACOS:
+                    ext.include_dirs.append('/opt/homebrew/opt/libomp/include')
+
+                if self.openmp_library_dir:
+                    ext.library_dirs.append(self.openmp_library_dir)
+                elif IS_MACOS:
+                    ext.library_dirs.append('/opt/homebrew/opt/libomp/lib')
 
         super().build_extensions()
 
-    def _check_openmp_support(self):
-        """全面检测 OpenMP 支持（编译 + 链接）"""
-        test_code = r"""
+    def _check_openmp(self):
+        """尝试编译测试程序以检测 OpenMP 支持"""
+        test_code = """
         #include <omp.h>
         int main() {
             #pragma omp parallel
-            { 
-                int tid = omp_get_thread_num(); 
+            {
+                int tid = omp_get_thread_num();
             }
             return 0;
         }
         """
-
         try:
             tmp_dir = self.build_temp
             os.makedirs(tmp_dir, exist_ok=True)
-
-            # 生成测试文件
-            test_file = os.path.join(tmp_dir, 'openmp_test.cpp')
-            with open(test_file, 'w') as f:
+            test_file = os.path.join(tmp_dir, "test_openmp.cpp")
+            with open(test_file, "w") as f:
                 f.write(test_code)
 
-            # 获取编译和链接参数（包含路径）
-            compile_args = self._get_openmp_compile_args()
-            link_args = self._get_openmp_link_args()
-
-            # 添加自定义包含路径和库路径
+            compile_args, link_args = get_openmp_flags()
             if self.openmp_include_dir:
-                compile_args.extend(['-I', self.openmp_include_dir])
+                compile_args += ["-I", self.openmp_include_dir]
             if self.openmp_library_dir:
-                link_args.extend(['-L', self.openmp_library_dir])
+                link_args += ["-L", self.openmp_library_dir]
 
-            # macOS 默认 Homebrew 路径
-            if IS_MACOS and not self.openmp_include_dir:
-                brew_omp_include = '/opt/homebrew/opt/libomp/include'
-                if os.path.exists(brew_omp_include):
-                    compile_args.extend(['-I', brew_omp_include])
-            if IS_MACOS and not self.openmp_library_dir:
-                brew_omp_lib = '/opt/homebrew/opt/libomp/lib'
-                if os.path.exists(brew_omp_lib):
-                    link_args.extend(['-L', brew_omp_lib])
-
-            # 编译测试程序
-            objects = self.compiler.compile(
-                [test_file],
-                output_dir=tmp_dir,
-                extra_postargs=compile_args
-            )
-
-            # 链接测试程序
-            self.compiler.link_executable(
-                objects,
-                os.path.join(tmp_dir, 'openmp_test'),
-                extra_postargs=link_args
-            )
-
+            objs = self.compiler.compile([test_file], output_dir=tmp_dir, extra_postargs=compile_args)
+            self.compiler.link_executable(objs, os.path.join(tmp_dir, "test_openmp_exec"), extra_postargs=link_args)
             return True
-        except (CompileError, LinkError) as e:
-            print(f"OpenMP 检测失败: {str(e)}")
+        except (CompileError, LinkError, Exception) as e:
+            print(f"OpenMP support test failed: {e}")
             return False
-        except Exception as e:
-            print(f"OpenMP 检测异常: {str(e)}")
-            return False
-        finally:
-            # 清理临时文件
-            pass  # 可根据需要添加清理逻辑
-
-    def _add_openmp_flags(self):
-        """添加平台相关的 OpenMP 编译和链接选项"""
-        for ext in self.extensions:
-            # 编译选项
-            if IS_MACOS:
-                ext.extra_compile_args.extend(['-Xpreprocessor', '-fopenmp'])
-                # 添加自定义包含路径
-                if self.openmp_include_dir:
-                    ext.include_dirs.append(self.openmp_include_dir)
-                else:
-                    # 默认 Homebrew 路径
-                    brew_omp_include = '/opt/homebrew/opt/libomp/include'
-                    if os.path.exists(brew_omp_include):
-                        ext.include_dirs.append(brew_omp_include)
-            elif IS_LINUX:
-                ext.extra_compile_args.append('-fopenmp')
-            elif IS_WINDOWS:
-                ext.extra_compile_args.append('/openmp')
-
-            # 链接选项
-            if IS_MACOS:
-                ext.extra_link_args.append('-lomp')
-                # 添加自定义库路径
-                if self.openmp_library_dir:
-                    ext.library_dirs.append(self.openmp_library_dir)
-                else:
-                    # 默认 Homebrew 路径
-                    brew_omp_lib = '/opt/homebrew/opt/libomp/lib'
-                    if os.path.exists(brew_omp_lib):
-                        ext.library_dirs.append(brew_omp_lib)
-            elif IS_LINUX:
-                ext.extra_link_args.append('-fopenmp')
-
-            # 定义宏
-            # ext.define_macros.append(('_OPENMP', None))
-
-    def _get_openmp_compile_args(self):
-        """获取平台特定的 OpenMP 编译参数"""
-        args = []
-        if IS_MACOS:
-            args = ['-Xpreprocessor', '-fopenmp']
-        elif IS_LINUX:
-            args = ['-fopenmp']
-        elif IS_WINDOWS:
-            args = ['/openmp']
-        return args
-
-    def _get_openmp_link_args(self):
-        """获取平台特定的 OpenMP 链接参数"""
-        args = []
-        if IS_MACOS:
-            args = ['-lomp']
-        elif IS_LINUX:
-            args = ['-fopenmp']
-        return args
 
 
+# 构建 Extension 模块
+source_files = [os.path.join(BINDINGS_DIR, "bindings.cpp")] + find_cpp_sources(SRC_DIR)
+
+ext_modules = [
+    Extension(
+        MODULE_NAME,
+        sources=source_files,
+        include_dirs=[],  # 会在 build_ext 中添加
+        language="c++"
+    )
+]
+
+# 安装配置
 setup(
-    name='deepsearch',
+    name=MODULE_NAME,
     version=__version__,
     description='Deep Approximate Nearest Neighbor Search',
     long_description=open('README.md').read() if os.path.exists('README.md') else '',
@@ -242,15 +147,14 @@ setup(
     author_email='nitianzero@gmail.com',
     url='https://github.com/kosthi/deepsearch',
     ext_modules=ext_modules,
+    cmdclass={'build_ext': BuildExt},
     install_requires=[
         'numpy>=1.18',
         'pybind11>=2.6'
     ],
-    cmdclass={'build_ext': BuildExt},
-    zip_safe=False,
     classifiers=[
         'Intended Audience :: Science/Research',
-        'License :: OSI Approved :: MIT License',
+        'License :: OSI Approved :: Apache-2.0 License',
         'Programming Language :: Python :: 3',
         'Programming Language :: C++',
         'Operating System :: POSIX :: Linux',
@@ -259,10 +163,11 @@ setup(
         'Topic :: Scientific/Engineering :: Artificial Intelligence',
     ],
     python_requires='>=3.6',
+    zip_safe=False,
+    include_package_data=True,
     entry_points={
         'console_scripts': [
             'deepsearch-cli=deepsearch.cli:main',
         ],
     },
-    include_package_data=True,
 )

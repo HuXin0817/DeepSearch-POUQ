@@ -3,11 +3,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include <memory>
-#include <stdexcept>
-#include <thread>
-
-// 条件包含OpenMP头文件
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -17,247 +12,206 @@
 #include "searcher.h"
 
 namespace py = pybind11;
-using namespace pybind11::literals;
 
-namespace {
+// -----------------------------------------------------------------------------
+// 1. Generic buffer adapter: supports 1D or 2D arrays of any scalar type T
+// -----------------------------------------------------------------------------
+template <typename T>
+struct NdArray {
+  T* ptr;
+  ssize_t rows;
+  ssize_t cols;
+};
 
-// 统一的异常处理宏
-#define THROW_IF_NOT(cond, msg) \
-  if (!(cond)) throw std::invalid_argument(msg)
-
-// 增强的数组形状验证函数
-inline void validate_input_array(const py::buffer_info& buffer) {
-  THROW_IF_NOT(buffer.ndim == 1 || buffer.ndim == 2,
-               "Input must be a 1D or 2D array. Got " +
-                   std::to_string(buffer.ndim) + "D array");
-}
-
-// 统一的数组数据提取函数
-std::tuple<size_t, size_t, float*> get_array_data(py::object obj) {
-  py::array_t<float, py::array::c_style | py::array::forcecast> arr(obj);
+template <typename T>
+NdArray<T> to_buffer(py::object obj) {
+  auto arr = py::array_t < T, py::array::c_style | py::array::forcecast > (obj);
   auto buf = arr.request();
-  validate_input_array(buf);
 
-  size_t rows = buf.ndim == 2 ? buf.shape[0] : 1;
-  size_t dim = buf.ndim == 2 ? buf.shape[1] : buf.shape[0];
-  return {rows, dim, static_cast<float*>(buf.ptr)};
+  if (buf.ndim < 1 || buf.ndim > 2)
+    throw py::buffer_error("Expected 1D or 2D array, got " +
+                           std::to_string(buf.ndim) + "D");
+
+  ssize_t rows = (buf.ndim == 2 ? buf.shape[0] : 1);
+  ssize_t cols = (buf.ndim == 2 ? buf.shape[1] : buf.shape[0]);
+  return {static_cast<T*>(buf.ptr), rows, cols};
 }
 
-}  // namespace
-
-// 条件编译OpenMP函数
+// -----------------------------------------------------------------------------
+// 2. Parallel-for utility: uses OpenMP if available, otherwise falls back to
+// serial
+// -----------------------------------------------------------------------------
+template <typename Func>
+void parallel_for(size_t n, int num_threads, Func f) {
 #ifdef _OPENMP
-void set_num_threads(int num_threads) { omp_set_num_threads(num_threads); }
+  int original = omp_get_max_threads();
+  if (num_threads > 0) omp_set_num_threads(num_threads);
+#pragma omp parallel for schedule(dynamic)
+  for (size_t i = 0; i < n; ++i) {
+    f(i);
+  }
+  omp_set_num_threads(original);
 #else
-void set_num_threads(int) {
-  // 无操作
-}
+  for (size_t i = 0; i < n; ++i) {
+    f(i);
+  }
 #endif
+}
 
+// -----------------------------------------------------------------------------
+// 3. Graph wrapper
+// -----------------------------------------------------------------------------
 struct Graph {
   deepsearch::Graph<int> graph;
 
   Graph() = default;
-
-  explicit Graph(const Graph& rhs) : graph(rhs.graph) {}
-
+  explicit Graph(const deepsearch::Graph<int>& graph) : graph(graph) {}
   explicit Graph(const std::string& filename) { graph.load(filename); }
 
-  explicit Graph(const deepsearch::Graph<int>& graph) : graph(graph) {}
-
   void save(const std::string& filename) { graph.save(filename); }
-
   void load(const std::string& filename) { graph.load(filename); }
 };
 
-class Index {
-  std::unique_ptr<deepsearch::Builder> index_;
+// -----------------------------------------------------------------------------
+// 4. Index wrapper
+// -----------------------------------------------------------------------------
+struct Index {
+  std::unique_ptr<deepsearch::Builder> idx;
 
- public:
-  Index(const std::string& index_type, int dim, const std::string& metric,
-        int R = 32, int L = 200) {
-    THROW_IF_NOT(dim > 0, "Dimension must be positive");
-    THROW_IF_NOT(R > 0, "R parameter must be positive");
-    THROW_IF_NOT(L >= 0, "L parameter must be non-negative");
+  Index(const std::string& type, int dim, const std::string& metric, int R = 32,
+        int L = 200) {
+    if (dim <= 0) throw py::value_error("`dim` must be positive");
+    if (R <= 0) throw py::value_error("`R` must be positive");
+    if (L < 0) throw py::value_error("`L` must be non-negative");
 
-    if (index_type == "HNSW") {
-      index_ = std::make_unique<deepsearch::Hnsw>(dim, metric, R, L);
+    if (type == "HNSW") {
+      idx = std::make_unique<deepsearch::Hnsw>(dim, metric, R, L);
     } else {
-      throw std::invalid_argument("Unsupported index type: " + index_type);
+      throw py::value_error("Unknown index type: " + type);
     }
   }
 
-  Graph build(py::object input) {
-    auto [n, dim, data] = get_array_data(input);
-    THROW_IF_NOT(dim == index_->Dim(), "Input dimension mismatch. Expected " +
-                                           std::to_string(index_->Dim()) +
-                                           ", got " + std::to_string(dim));
-    index_->Build(data, n);
-    return Graph(index_->GetGraph());
+  Graph build(py::object data) {
+    auto buf = to_buffer<float>(data);
+    if (buf.cols != idx->Dim())
+      throw py::value_error("Dimension mismatch: expected " +
+                            std::to_string(idx->Dim()) + ", got " +
+                            std::to_string(buf.cols));
+    idx->Build(buf.ptr, buf.rows);
+    return Graph(idx->GetGraph());
   }
 };
 
-class Searcher {
-  std::unique_ptr<deepsearch::SearcherBase> searcher_;
-  size_t data_dim_;
+// -----------------------------------------------------------------------------
+// 5. Searcher wrapper
+// -----------------------------------------------------------------------------
+struct Searcher {
+  std::unique_ptr<deepsearch::SearcherBase> sr;
+  ssize_t dim_;
 
- public:
   Searcher(const Graph& graph, py::object data, const std::string& metric,
-           int level)
-      : searcher_(deepsearch::create_searcher(graph.graph, metric, level)) {
-    auto [n, dim, ptr] = get_array_data(data);
-    data_dim_ = dim;
-    searcher_->SetData(ptr, n, dim);
+           int level) {
+    auto buf = to_buffer<float>(data);
+    dim_ = buf.cols;
+    sr = deepsearch::create_searcher(graph.graph, metric, level);
+    sr->SetData(buf.ptr, buf.rows, buf.cols);
   }
 
   py::array_t<int> search(py::object query, int k) {
-    py::array_t<float, py::array::c_style | py::array::forcecast> items(query);
-    int* ids;
-    ids = new int[k];
-    searcher_->Search(items.data(0), k, ids);
-    py::capsule free_when_done(ids, [](void* f) { delete[] f; });
-    return py::array_t<int>({k}, {sizeof(int)}, ids, free_when_done);
+    auto buf = to_buffer<float>(query);
+    if (buf.rows != 1 || buf.cols != dim_)
+      throw py::value_error("Query must be shape (1, " + std::to_string(dim_) +
+                            ")");
 
-    //    auto [nq, dim, qdata] = get_array_data(query);
-    //    THROW_IF_NOT(dim == data_dim_, "Query dimension mismatch. Expected " +
-    //                                       std::to_string(data_dim_));
-    //
-    //    auto* ids = new int[nq * k];  // 使用原生数组避免unique_ptr的释放问题
-    //    py::capsule free_when_done(ids,
-    //                               [](void* f) { delete[]
-    //                               static_cast<int*>(f); });
-    //
-    //    searcher_->Search(qdata, k, ids);
-    //
-    //    return py::array_t<int>(k, ids);
-  }
+    int* ids = new int[k];
+    sr->Search(buf.ptr, k, ids);
 
-  py::array_t<int> batch_search(py::object query, int k, int num_threads = 0) {
-    auto query_data = get_array_data(query);
-    auto nq = std::get<0>(query_data);  // 或根据实际返回类型调整
-    auto dim = std::get<1>(query_data);
-    auto qdata = std::get<2>(query_data);  // 假设 qdata 是 float* 类型
-
-    THROW_IF_NOT(dim == data_dim_, "Query dimension mismatch. Expected " +
-                                       std::to_string(data_dim_));
-
-    auto* ids = new int[nq * k];  // 使用原生数组避免unique_ptr的释放问题
     py::capsule free_when_done(ids,
                                [](void* f) { delete[] static_cast<int*>(f); });
 
-    // OpenMP并行区域
-#ifdef _OPENMP
-    {
-      py::gil_scoped_release release;
-      const auto original_threads = omp_get_max_threads();
-      if (num_threads > 0) omp_set_num_threads(num_threads);
+    return py::array_t<int>({k},            // shape
+                            {sizeof(int)},  // strides
+                            ids,            // pointer
+                            free_when_done  // capsule
+    );
+  }
 
-      try {
-#pragma omp parallel for schedule(dynamic)
-        for (size_t i = 0; i < nq; ++i) {
-          searcher_->Search(qdata + i * dim, k, ids + i * k);
-        }
-      } catch (...) {
-        omp_set_num_threads(original_threads);
-        throw;
-      }
-      omp_set_num_threads(original_threads);
-    }
-#else
-    // 顺序执行
-    for (size_t i = 0; i < nq; ++i) {
-      searcher_->Search(qdata + i * dim, k, ids + i * k);
-    }
-#endif
+  py::array_t<int> batch_search(py::object query, int k, int num_threads = 0) {
+    auto buf = to_buffer<float>(query);
+    if (buf.cols != dim_)
+      throw py::value_error("Batch query dimension mismatch");
 
-    // 返回二维数组
-    return py::array_t<int>(
-        {static_cast<ssize_t>(nq), static_cast<ssize_t>(k)},  // Shape
-        {static_cast<ssize_t>(k * sizeof(int)),               // Strides (row)
-         static_cast<ssize_t>(sizeof(int))},                  // Strides (col)
-        ids,                                                  // 数据指针
-        free_when_done                                        // 内存管理
+    size_t nq = buf.rows;
+    int* ids = new int[nq * k];
+
+    parallel_for(nq, num_threads, [&](size_t i) {
+      sr->Search(buf.ptr + i * dim_, k, ids + i * k);
+    });
+
+    py::capsule free_when_done(ids,
+                               [](void* f) { delete[] static_cast<int*>(f); });
+
+    // 返回二维数组，Python 侧析构时自动调用 capsule
+    return py::array_t<int>({(ssize_t)nq, (ssize_t)k},    // shape
+                            {(ssize_t)(k * sizeof(int)),  // row stride
+                             (ssize_t)(sizeof(int))},     // col stride
+                            ids,                          // data ptr
+                            free_when_done                // capsule
     );
   }
 
   void set_ef(int ef) {
-    THROW_IF_NOT(ef > 0, "ef must be positive");
-    searcher_->SetEf(ef);
+    if (ef <= 0) throw py::value_error("`ef` must be positive");
+    sr->SetEf(ef);
   }
 
   void optimize(int num_threads = 0) {
-#ifdef _OPENMP
-    const auto original_threads = omp_get_max_threads();
-    if (num_threads > 0) omp_set_num_threads(num_threads);
-#endif
-
-    try {
-      searcher_->Optimize(num_threads);
-    } catch (...) {
-#ifdef _OPENMP
-      omp_set_num_threads(original_threads);
-#endif
-      throw;
-    }
-
-#ifdef _OPENMP
-    omp_set_num_threads(original_threads);
-#endif
+    // Use parallel_for with a single iteration to adjust threads
+    parallel_for(1, num_threads, [&](size_t) { sr->Optimize(num_threads); });
   }
 };
 
+// -----------------------------------------------------------------------------
+// 6. Module definition
+// -----------------------------------------------------------------------------
 PYBIND11_MODULE(deepsearch, m) {
   m.doc() = "DeepSearch Python bindings";
 
 #ifdef _OPENMP
-  m.def("set_num_threads", &set_num_threads, py::arg("num_threads"),
-        "Set global OpenMP thread count");
+  m.def(
+      "set_num_threads", [](int n) { omp_set_num_threads(n); },
+      "Set global OpenMP thread count", py::arg("num_threads"));
 #else
   m.def(
       "set_num_threads",
-      [](int) {
-        py::print("Warning: OpenMP support not available, threading disabled");
-      },
-      py::arg("num_threads"),
-      "Thread setting unavailable (compiled without OpenMP support)");
+      [](int) { py::print("OpenMP not available; call ignored"); },
+      "Dummy set_num_threads when OpenMP is disabled", py::arg("num_threads"));
 #endif
 
   py::class_<Graph>(m, "Graph")
       .def(py::init<>())
       .def(py::init<const std::string&>(), py::arg("filename"))
-      .def("save", &Graph::save, py::arg("filename"), "Save graph to file")
-      .def("load", &Graph::load, py::arg("filename"), "Load graph from file");
+      .def("save", &Graph::save, py::arg("filename"))
+      .def("load", &Graph::load, py::arg("filename"));
 
   py::class_<Index>(m, "Index")
       .def(py::init<const std::string&, int, const std::string&, int, int>(),
-           py::arg("index_type"), py::arg("dim"), py::arg("metric"),
-           py::arg("R") = 32, py::arg("L") = 200,
-           "Initialize index\n"
-           "Args:\n"
-           "  index_type: NSG or HNSW\n"
-           "  dim: data dimension\n"
-           "  metric: distance metric\n"
-           "  R: graph degree\n"
-           "  L: construction complexity")
-      .def("build", &Index::build, py::arg("data"), "Build index from data");
+           py::arg("type"), py::arg("dim"), py::arg("metric"),
+           py::arg("R") = 32, py::arg("L") = 200)
+      .def("build", &Index::build, py::arg("data"),
+           "Build the index from a float array");
 
   py::class_<Searcher>(m, "Searcher")
       .def(py::init<const Graph&, py::object, const std::string&, int>(),
            py::arg("graph"), py::arg("data"), py::arg("metric"),
-           py::arg("level"),
-           "Initialize searcher\n"
-           "Args:\n"
-           "  graph: prebuilt graph\n"
-           "  data: original data vectors\n"
-           "  metric: distance metric\n"
-           "  level: search level")
-      .def("set_ef", &Searcher::set_ef, py::arg("ef"),
-           "Set search ef parameter")
+           py::arg("level"))
       .def("search", &Searcher::search, py::arg("query"), py::arg("k"),
-           "Single query search")
+           "Search a single vector")
       .def("batch_search", &Searcher::batch_search, py::arg("query"),
            py::arg("k"), py::arg("num_threads") = 0,
-           "Batch search with threading")
+           "Search multiple vectors in parallel")
+      .def("set_ef", &Searcher::set_ef, py::arg("ef"),
+           "Set the `ef` parameter for search")
       .def("optimize", &Searcher::optimize, py::arg("num_threads") = 0,
-           "Optimize search structure");
+           "Optimize the searcher's prefetch settings");
 }
