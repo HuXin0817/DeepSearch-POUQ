@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Step 1: 下载 SIFT 数据集
-wget -O sift.tar.gz ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz
+wget -q -O sift.tar.gz ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz
 
 # Step 2: 解压数据集
 tar -xvzf sift.tar.gz
