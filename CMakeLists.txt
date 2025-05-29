@@ -32,26 +32,6 @@ add_executable(DeepSearch
         src/neighbor.cpp
 )
 
-# macOS 下尝试查找 OpenMP（非强制）
-if (APPLE)
-    # 设置 OpenMP 路径（Homebrew 安装的 libomp）
-    set(OpenMP_C_FLAGS "-Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include")
-    set(OpenMP_C_LIB_NAMES "omp")
-
-    set(OpenMP_CXX_FLAGS "-Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include")
-    set(OpenMP_CXX_LIB_NAMES "omp")
-
-    set(OpenMP_omp_LIBRARY "/opt/homebrew/opt/libomp/lib/libomp.dylib")
-
-    find_package(OpenMP)  # 移除了 REQUIRED
-    if (OpenMP_CXX_FOUND)
-        message(STATUS "Found OpenMP on macOS")
-        target_link_libraries(DeepSearch PRIVATE OpenMP::OpenMP_CXX)
-    else ()
-        message(WARNING "OpenMP not found on macOS, continuing without it")
-    endif ()
-endif ()
-
 # 链接平台特定库
 if (UNIX AND NOT APPLE)
     target_link_libraries(DeepSearch PRIVATE rt)

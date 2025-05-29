@@ -39,3 +39,5 @@ cmake-build-release*/
 
 python_bindings/build
 python_bindings/deepsearch.egg-info
+
+**/.DS_Store

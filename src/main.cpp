@@ -9,19 +9,46 @@
 template <typename T>
 void load_fvecs(const char* filename, T*& p, int64_t& n, int64_t& dim) {
   std::ifstream fs(filename, std::ios::binary);
-  int dim_32;
-  fs.read((char*)&dim_32, 4);
-  dim = dim_32;
-  fs.seekg(0, std::ios::end);
-  n = fs.tellg() / (4 + dim * sizeof(T));
-  fs.seekg(0, std::ios::beg);
-  std::cout << "Read path: " << filename << ", nx: " << n << ", dim: " << dim
-            << std::endl;
-  p = reinterpret_cast<T*>(aligned_alloc(64, n * dim * sizeof(T)));
-  for (int i = 0; i < n; ++i) {
-    fs.seekg(4, std::ios::cur);
-    fs.read((char*)&p[i * dim], dim * sizeof(T));
+  if (!fs.is_open()) {
+    throw std::runtime_error("Cannot open file: " +
+                             std::filesystem::path(filename).string());
   }
+
+  // 1. 读入 single-vector 的维度（4 字节 little-endian）
+  int32_t dim32;
+  fs.read(reinterpret_cast<char*>(&dim32), sizeof(dim32));
+  dim = dim32;
+
+  // 2. 计算文件总字节数，进而计算向量个数 n
+  fs.seekg(0, std::ios::end);
+  std::streamoff total_bytes = fs.tellg();
+  // 每条记录占 4 字节头 + dim * sizeof(T)
+  const std::size_t rec_size = sizeof(dim32) + dim * sizeof(T);
+  if (total_bytes % rec_size != 0) {
+    throw std::runtime_error("Corrupted .fvecs file: unexpected file size");
+  }
+  n = total_bytes / rec_size;
+
+  std::cout << "Read path: " << filename << ", n = " << n << ", dim = " << dim
+            << std::endl;
+
+  // 3. 对齐分配：posix_memalign 要求 alignment 为 2 的幂，且 pointer 可 free()
+  void* raw_ptr = nullptr;
+  int err = posix_memalign(&raw_ptr, 64, n * dim * sizeof(T));
+  if (err != 0 || raw_ptr == nullptr) {
+    throw std::bad_alloc();
+  }
+  p = reinterpret_cast<T*>(raw_ptr);
+
+  // 4. 回到文件开头，逐条读取数据
+  fs.seekg(sizeof(dim32), std::ios::beg);
+  for (int64_t i = 0; i < n; ++i) {
+    // 4.1 跳过 4 字节的头部（已经在第一次循环前做过一次 seek）
+    //     这里不再每次都调用 seekg，只是在循环首执行一次
+    fs.read(reinterpret_cast<char*>(p + i * dim), dim * sizeof(T));
+  }
+
+  fs.close();
 }
 
 int main(int argc, char** argv) {
@@ -39,7 +66,7 @@ int main(int argc, char** argv) {
   int topk = std::stoi(argv[6]);
   int search_ef = std::stoi(argv[7]);
   int num_threads = 1;
-  int iters = 100;
+  int iters = 10;
   if (argc >= 9) {
     num_threads = std::stoi(argv[8]);
   }
