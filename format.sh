@@ -3,7 +3,7 @@ EXTENSIONS=("c" "h" "cpp" "hpp")
 
 # 查找并格式化文件
 for ext in "${EXTENSIONS[@]}"; do
-  find ./src ./examples ./python_bindings -type f -name "*.$ext" -exec clang-format -i {} +
+  find ./src ./tests ./python_bindings -type f -name "*.$ext" -exec clang-format -i {} +
 done
 
 echo "Formatting complete!"
