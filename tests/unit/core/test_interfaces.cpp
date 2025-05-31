@@ -11,9 +11,10 @@ using namespace deepsearch::core;
 // 测试用的L2距离计算器实现
 class TestL2Computer : public DistanceComputerTemplate<float> {
  public:
-  float compute(const float* a, const float* b, size_t dim) const override {
+  explicit TestL2Computer(size_t dim) : dim_(dim) {}
+  float compute(const float* a, const float* b) const override {
     float sum = 0.0f;
-    for (size_t i = 0; i < dim; ++i) {
+    for (size_t i = 0; i < dim_; ++i) {
       float diff = a[i] - b[i];
       sum += diff * diff;
     }
@@ -21,19 +22,20 @@ class TestL2Computer : public DistanceComputerTemplate<float> {
   }
 
   std::string name() const override { return "TestL2Computer"; }
+
+ private:
+  size_t dim_;
 };
 
 // 测试用的搜索引擎实现
 class TestSearchEngine : public SearchEngineTemplate<float> {
  private:
   std::vector<std::vector<float>> data_;
-  size_t dim_;
+  size_t dim_{0};
   std::unique_ptr<DistanceComputerTemplate<float>> distance_computer_;
 
  public:
-  TestSearchEngine() : dim_(0) {
-    distance_computer_ = std::make_unique<TestL2Computer>();
-  }
+  TestSearchEngine() = default;
 
   void build(const float* data, size_t n, size_t dim) override {
     dim_ = dim;
@@ -44,13 +46,14 @@ class TestSearchEngine : public SearchEngineTemplate<float> {
         data_[i][j] = data[i * dim + j];
       }
     }
+    distance_computer_ = std::make_unique<TestL2Computer>(dim_);
   }
 
   std::vector<int> search(const float* query, size_t k) const override {
     std::vector<std::pair<float, int>> distances;
 
     for (size_t i = 0; i < data_.size(); ++i) {
-      float dist = distance_computer_->compute(query, data_[i].data(), dim_);
+      float dist = distance_computer_->compute(query, data_[i].data());
       distances.emplace_back(dist, static_cast<int>(i));
     }
 
@@ -74,12 +77,12 @@ class TestSearchEngine : public SearchEngineTemplate<float> {
 
 TEST_CASE("DistanceComputerTemplate Tests", "[interfaces][distance]") {
   SECTION("L2 distance computation") {
-    TestL2Computer computer;
+    TestL2Computer computer(3);
 
     std::vector<float> a = {1.0f, 2.0f, 3.0f};
     std::vector<float> b = {4.0f, 5.0f, 6.0f};
 
-    float distance = computer.compute(a.data(), b.data(), 3);
+    float distance = computer.compute(a.data(), b.data());
     float expected = std::sqrt(27.0f);  // sqrt(9+9+9)
 
     REQUIRE(std::abs(distance - expected) < 1e-6);
@@ -87,10 +90,10 @@ TEST_CASE("DistanceComputerTemplate Tests", "[interfaces][distance]") {
   }
 
   SECTION("Zero distance") {
-    TestL2Computer computer;
+    TestL2Computer computer(3);
     std::vector<float> a = {1.0f, 2.0f, 3.0f};
 
-    float distance = computer.compute(a.data(), a.data(), 3);
+    float distance = computer.compute(a.data(), a.data());
     REQUIRE(distance == 0.0f);
   }
 }
@@ -200,7 +203,7 @@ TEST_CASE("Factory Enums Tests", "[interfaces][factory]") {
 TEST_CASE("Interface Inheritance Tests", "[interfaces][inheritance]") {
   SECTION("DistanceComputer polymorphism") {
     std::unique_ptr<DistanceComputerTemplate<float>> computer =
-        std::make_unique<TestL2Computer>();
+        std::make_unique<TestL2Computer>(3);
 
     REQUIRE(computer != nullptr);
     REQUIRE(computer->name() == "TestL2Computer");

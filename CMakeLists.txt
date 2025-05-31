@@ -1,13 +1,26 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.15)
 project(DeepSearch)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 添加 Catch2
+include(FetchContent)
+FetchContent_Declare(
+  Catch2
+  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+  GIT_TAG        v3.4.0  # 使用最新稳定版本
+)
+FetchContent_MakeAvailable(Catch2)
 
 # 全局添加 src 目录到头文件搜索路径
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-# 添加子目录（会自动执行 src/hnsw/CMakeLists.txt）
+# 添加子目录
+add_subdirectory(src/core)
 add_subdirectory(src/hnsw)
+add_subdirectory(src/distance)
+add_subdirectory(tests)
 
 # 设置通用编译选项（所有平台共用）
 set(COMMON_FLAGS "-Wall -Wextra -O3 -fpic -fexceptions -fno-rtti")
@@ -42,3 +55,6 @@ target_link_libraries(DeepSearch
         PRIVATE
         hnsw_lib
 )
+
+# 启用测试
+enable_testing()
