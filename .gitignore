@@ -41,3 +41,8 @@ python_bindings/build
 python_bindings/deepsearch.egg-info
 
 **/.DS_Store
+
+.vscode
+siftsmall
+siftsmall.tar.gz
+test.py
