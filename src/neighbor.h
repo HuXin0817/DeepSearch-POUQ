@@ -9,7 +9,6 @@
 #include "allocator.h"
 
 namespace deepsearch {
-
 namespace searcher {
 
 template <typename Block = uint64_t>
@@ -179,6 +178,7 @@ struct LinearPool {
 
   bool has_next() const { return cur_ < size_; }
   int id(int i) const { return get_id(data_[i].id); }
+  dist_t distance(int i) const { return data_[i].distance; }
   int size() const { return size_; }
   int capacity() const { return capacity_; }
 

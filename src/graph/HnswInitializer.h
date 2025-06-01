@@ -12,8 +12,8 @@ struct HnswInitializer {
   std::vector<std::vector<int, align_alloc<int>>> lists;
   HnswInitializer() = default;
 
-  explicit HnswInitializer(int n, int K = 0)
-      : N(n), K(K), levels(n), lists(n) {}
+  explicit HnswInitializer(int n, int k)
+      : N(n), K(k), ep(0), levels(n), lists(n) {}
 
   HnswInitializer(const HnswInitializer& rhs) = default;
 
@@ -29,10 +29,10 @@ struct HnswInitializer {
 
   int* edges(int level, int u) { return lists[u].data() + (level - 1) * K; }
 
-  template <typename Pool, typename Computer>
-  void initialize(Pool& pool, const Computer& computer) const {
+  template <typename Pool, typename Quant>
+  void initialize(Pool& pool, const Quant& quant) const {
     int u = ep;
-    auto cur_dist = computer(u);
+    auto cur_dist = quant->compute_query_distance(u);
     for (int level = levels[u]; level > 0; --level) {
       bool changed = true;
       while (changed) {
@@ -40,7 +40,7 @@ struct HnswInitializer {
         const int* list = edges(level, u);
         for (int i = 0; i < K && list[i] != -1; ++i) {
           int v = list[i];
-          auto dist = computer(v);
+          auto dist = quant->compute_query_distance(v);
           if (dist < cur_dist) {
             cur_dist = dist;
             u = v;

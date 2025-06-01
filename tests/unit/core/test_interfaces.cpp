@@ -1,3 +1,5 @@
+#include <computers.h>
+
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <iostream>
@@ -193,8 +195,8 @@ TEST_CASE("Factory Enums Tests", "[interfaces][factory]") {
   }
 
   SECTION("DistanceComputer metric types") {
-    auto l2_type = DistanceComputerFactory<float>::MetricType::L2;
-    auto ip_type = DistanceComputerFactory<float>::MetricType::IP;
+    auto l2_type = DistanceType::L2;
+    auto ip_type = DistanceType::IP;
 
     REQUIRE(static_cast<int>(l2_type) != static_cast<int>(ip_type));
   }

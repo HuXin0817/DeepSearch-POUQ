@@ -27,19 +27,6 @@ class SearchEngineFactory {
   static std::string metric_name(MetricType type);
 };
 
-// 模板化的距离计算器工厂
-template <typename T>
-class DistanceComputerFactory {
- public:
-  enum class MetricType { L2, IP, COSINE, HAMMING };
-
-  static std::unique_ptr<DistanceComputerTemplate<T>> create(
-      MetricType metric_type,
-      const std::unordered_map<std::string, std::any>& params = {});
-
-  static std::string metric_name(MetricType type);
-};
-
 // 量化器工厂
 template <typename InputType, typename CodeType>
 class QuantizerFactory {

@@ -11,6 +11,7 @@ mkdir -p build
 cd build
 
 # Step 4: 编译项目
+cmake clean
 cmake ..
 cmake --build . --config Release
 

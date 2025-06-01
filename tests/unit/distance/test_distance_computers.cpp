@@ -6,9 +6,12 @@
 #include <vector>
 
 #include "distance/computers.h"
+#include "simd/simd_utils.h"
 
 using namespace deepsearch::core;
 using namespace deepsearch::distance;
+using namespace deepsearch::simd;
+
 using Catch::Approx;
 
 class DistanceComputerTestFixture {
@@ -65,17 +68,40 @@ class DistanceComputerTestFixture {
   std::mt19937 gen_{std::random_device{}()};
 };
 
+// 辅助函数：将SIMD Level枚举转换为字符串
+std::string simdLevelToString(SIMDCapabilities::Level level) {
+  switch (level) {
+    case SIMDCapabilities::Level::AVX512:
+      return "AVX512";
+    case SIMDCapabilities::Level::AVX2:
+      return "AVX2";
+    case SIMDCapabilities::Level::SSE:
+      return "SSE";
+    case SIMDCapabilities::Level::NEON:
+      return "NEON";
+    case SIMDCapabilities::Level::NONE:
+      return "Generic";
+    default:
+      return "Unknown";
+  }
+}
+
 TEST_CASE_METHOD(DistanceComputerTestFixture, "SIMD Capabilities Detection",
                  "[distance][simd]") {
   // 测试SIMD能力检测
-  std::string optimal = SIMDCapabilities::getOptimalSIMD();
-  REQUIRE_FALSE(optimal.empty());
+  auto optimal = SIMDCapabilities::getOptimalSIMD();
 
-  // 至少应该支持Generic
-  bool valid_simd =
-      (optimal == "AVX512" || optimal == "AVX2" || optimal == "SSE" ||
-       optimal == "NEON" || optimal == "Generic");
+  // 检查返回的是有效的枚举值
+  bool valid_simd = (optimal == SIMDCapabilities::Level::AVX512 ||
+                     optimal == SIMDCapabilities::Level::AVX2 ||
+                     optimal == SIMDCapabilities::Level::SSE ||
+                     optimal == SIMDCapabilities::Level::NEON ||
+                     optimal == SIMDCapabilities::Level::NONE);
   REQUIRE(valid_simd);
+
+  // 输出检测到的SIMD能力
+  std::cout << "Detected SIMD capability: " << simdLevelToString(optimal)
+            << std::endl;
 }
 
 TEST_CASE_METHOD(DistanceComputerTestFixture, "L2 Distance Computer",
@@ -96,7 +122,7 @@ TEST_CASE_METHOD(DistanceComputerTestFixture, "L2 Distance Computer",
 
   SECTION("Computer name") {
     // 测试名称
-    REQUIRE(computer->name() == "L2Distance");
+    REQUIRE(computer->name() == "L2Distance_FP32");
   }
 }
 
@@ -112,7 +138,7 @@ TEST_CASE_METHOD(DistanceComputerTestFixture, "IP Distance Computer",
 
   SECTION("Computer name") {
     // 测试名称
-    REQUIRE(computer->name() == "IPDistance");
+    REQUIRE(computer->name() == "IPDistance_FP32");
   }
 }
 
@@ -140,7 +166,7 @@ TEST_CASE_METHOD(DistanceComputerTestFixture, "Distance Computer Factory",
     auto l2_computer =
         DistanceComputerFactory::create<float>(DistanceType::L2, dim_);
     REQUIRE(l2_computer != nullptr);
-    REQUIRE(l2_computer->name() == "L2Distance");
+    REQUIRE(l2_computer->name() == "L2Distance_FP32");
   }
 
   SECTION("Create IP distance computer") {
@@ -148,7 +174,7 @@ TEST_CASE_METHOD(DistanceComputerTestFixture, "Distance Computer Factory",
     auto ip_computer =
         DistanceComputerFactory::create<float>(DistanceType::IP, dim_);
     REQUIRE(ip_computer != nullptr);
-    REQUIRE(ip_computer->name() == "IPDistance");
+    REQUIRE(ip_computer->name() == "IPDistance_FP32");
   }
 
   SECTION("Create Cosine distance computer") {
@@ -197,20 +223,12 @@ TEST_CASE_METHOD(DistanceComputerTestFixture, "Performance Comparison",
 
   std::cout << "Average L2 distance computation time: " << avg_time
             << " microseconds" << std::endl;
-  std::cout << "SIMD capability: " << SIMDCapabilities::getOptimalSIMD()
+
+  // 使用辅助函数转换枚举为字符串
+  auto simd_level = SIMDCapabilities::getOptimalSIMD();
+  std::cout << "SIMD capability: " << simdLevelToString(simd_level)
             << std::endl;
 
   // 基本性能要求：每次计算应该在合理时间内完成
   REQUIRE(avg_time < 100.0);  // 小于100微秒
-}
-
-TEST_CASE_METHOD(DistanceComputerTestFixture, "Prefetch Test",
-                 "[distance][prefetch]") {
-  auto computer = std::make_unique<L2DistanceComputer<float>>(dim_);
-
-  // 测试预取不会崩溃
-  REQUIRE_NOTHROW(
-      computer->prefetch(reinterpret_cast<const char*>(data_a_.data())));
-  REQUIRE_NOTHROW(
-      computer->prefetch(reinterpret_cast<const char*>(data_b_.data())));
 }

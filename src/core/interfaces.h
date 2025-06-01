@@ -74,7 +74,6 @@ class DistanceComputerTemplate {
  public:
   virtual ~DistanceComputerTemplate() = default;
   virtual float compute(const T* a, const T* b) const = 0;
-  virtual void prefetch(const char* ptr) const {}
   virtual std::string name() const = 0;
 };
 

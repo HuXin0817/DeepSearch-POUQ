@@ -1,111 +1,91 @@
 #pragma once
 
-#include <cmath>
+#include <algorithm>
+#include <vector>
 
-#include "common.h"
 #include "fp32_quant.h"
-#include "memory.h"
-#include "neighbor.h"
-#include "simd/distance.h"
+#include "quantizer.h"
+#include "simd/distance_functions.h"
 
 namespace deepsearch {
+namespace quantization {
 
-template <Metric metric, typename Reorderer = FP32Quantizer<metric>,
-          int DIM = 0>
-struct SQ4Quantizer {
+class SQ4Quantizer : public QuantizerBase<float, uint8_t> {
+ public:
   using data_type = uint8_t;
   constexpr static int kAlign = 128;
-  float mx = -HUGE_VALF, mi = HUGE_VALF, dif;
-  int d, d_align;
-  int64_t code_size;
-  data_type* codes = nullptr;
-
-  Reorderer reorderer;
 
   SQ4Quantizer() = default;
 
-  explicit SQ4Quantizer(int dim)
-      : d(dim),
-        d_align(do_align(dim, kAlign)),
-        code_size(d_align / 2),
-        reorderer(dim) {}
+  // 修改构造函数，传入FP32量化器作为精排器
+  explicit SQ4Quantizer(
+      core::DistanceType metric, size_t dim,
+      std::shared_ptr<FP32Quantizer> reorder_quantizer = nullptr);
 
-  ~SQ4Quantizer() { free(codes); }
+  ~SQ4Quantizer() override = default;
 
-  void train(const float* data, int n) {
-    for (int64_t i = 0; i < n * d; ++i) {
-      mx = std::max(mx, data[i]);
-      mi = std::min(mi, data[i]);
-    }
-    dif = mx - mi;
-    codes = (data_type*)alloc2M(n * code_size);
-    for (int i = 0; i < n; ++i) {
-      encode(data + i * d, get_data(i));
-    }
-    reorderer.train(data, n);
-  }
+  // 实现基类接口
+  void train(const float* data, size_t n, size_t dim) override;
+  void encode(const float* input, uint8_t* output) const override;
+  void decode(const uint8_t* input, float* output) const override;
 
-  char* get_data(int u) const { return (char*)codes + u * code_size; }
+  size_t code_size() const override { return d_align / 2; }
+  size_t dimension() const override { return d; }
+  std::string name() const override { return "SQ4Quantizer"; }
 
-  void encode(const float* from, char* to) const {
-    for (int j = 0; j < d; ++j) {
-      float x = (from[j] - mi) / dif;
-      if (x < 0.0) {
-        x = 0.0;
-      }
-      if (x > 0.999) {
-        x = 0.999;
-      }
-      uint8_t y = 16 * x;
-      if (j & 1) {
-        to[j / 2] |= y << 4;
-      } else {
-        to[j / 2] |= y;
-      }
-    }
-  }
+  const char* get_data(size_t index) const override;
+  char* get_data(size_t index) override;
 
+  // 距离计算
+  float compute_distance(const uint8_t* a, const uint8_t* b) const;
+  void encode_query(const float* query) override;
+  float compute_query_distance(size_t index) const override;
+  float compute_query_distance(const uint8_t* code) const override;
+
+  void prefetch_data(size_t index, int lines = 1) const;
+
+  // 重排序接口 - 使用FP32量化器进行精排
   template <typename Pool>
-  void reorder(const Pool& pool, const float* q, int* dst, int k) const {
-    int cap = pool.capacity();
-    auto computer = reorderer.get_computer(q);
-    searcher::MaxHeap<typename Reorderer::template Computer<0>::dist_type> heap(
-        k);
-    for (int i = 0; i < cap; ++i) {
-      if (i + 1 < cap) {
-        computer.prefetch(pool.id(i + 1), 1);
+  void reorder(const Pool& pool, const float* query, int* dst, int k) const {
+    if (reorder_quantizer_) {
+      // 使用FP32量化器进行精确重排序
+      std::vector<std::pair<int, float>> candidates;
+      candidates.reserve(std::min(k, pool.size()));
+
+      for (int i = 0; i < std::min(k, pool.size()); ++i) {
+        int id = pool.id(i);
+        if (id >= 0) {
+          // 从FP32量化器获取原始浮点数据
+          const float* fp32_data =
+              reinterpret_cast<const float*>(reorder_quantizer_->get_data(id));
+          // 使用FP32量化器的距离计算方法
+          float exact_dist =
+              reorder_quantizer_->compute_distance(query, fp32_data);
+          candidates.emplace_back(id, exact_dist);
+        }
       }
-      int id = pool.id(i);
-      float dist = computer(id);
-      heap.push(id, dist);
-    }
-    for (int i = 0; i < k; ++i) {
-      dst[i] = heap.pop();
+
+      std::sort(
+          candidates.begin(), candidates.end(),
+          [](const auto& a, const auto& b) { return a.second < b.second; });
+
+      int result_size = std::min(k, static_cast<int>(candidates.size()));
+      for (int i = 0; i < result_size; ++i) {
+        dst[i] = candidates[i].first;
+      }
+      for (int i = result_size; i < k; ++i) {
+        dst[i] = -1;
+      }
     }
   }
 
-  template <int DALIGN = do_align(DIM, kAlign)>
-  struct Computer {
-    using dist_type = int32_t;
-    constexpr static auto dist_func = L2SqrSQ4;
-    const SQ4Quantizer& quant;
-    uint8_t* q;
-    Computer(const SQ4Quantizer& quant, const float* query)
-        : quant(quant), q((uint8_t*)alloc64B(quant.code_size)) {
-      quant.encode(query, (char*)q);
-    }
-    ~Computer() { free(q); }
-    dist_type operator()(int u) const {
-      return dist_func(q, (data_type*)quant.get_data(u), quant.d_align);
-    }
-    void prefetch(int u, int lines) const {
-      mem_prefetch<prefetch_L1>(quant.get_data(u), lines);
-    }
-  };
-
-  auto get_computer(const float* query) const {
-    return Computer<>(*this, query);
-  }
+ private:
+  size_t d, d_align;
+  float scale_, offset_;
+  uint8_t* codes = nullptr;
+  std::shared_ptr<FP32Quantizer> reorder_quantizer_;  // 用于精排的FP32量化器
+  std::unique_ptr<core::DistanceComputerTemplate<uint8_t>> distance_computer_;
 };
 
+}  // namespace quantization
 }  // namespace deepsearch

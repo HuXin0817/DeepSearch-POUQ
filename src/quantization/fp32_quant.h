@@ -1,66 +1,55 @@
 #pragma once
 
-#include "common.h"
-#include "memory.h"
-#include "simd/distance.h"
+#include <core/interfaces.h>
+
+#include "quantizer.h"
 
 namespace deepsearch {
+namespace quantization {
 
-template <Metric metric, int DIM = 0>
-struct FP32Quantizer {
+class FP32Quantizer : public QuantizerBase<float, float> {
+ public:
   using data_type = float;
   constexpr static int kAlign = 16;
-  int d, d_align;
-  int64_t code_size;
-  char* codes = nullptr;
 
   FP32Quantizer() = default;
+  explicit FP32Quantizer(core::DistanceType metric, size_t dim);
+  ~FP32Quantizer() override;
 
-  explicit FP32Quantizer(int dim)
-      : d(dim), d_align(do_align(dim, kAlign)), code_size(d_align * 4) {}
+  // 实现基类接口
+  void train(const float* data, size_t n, size_t dim) override;
+  void encode(const float* input, float* output) const override;
+  void decode(const float* input, float* output) const override;
 
-  ~FP32Quantizer() { free(codes); }
+  size_t code_size() const override { return d_align * sizeof(float); }
+  size_t dimension() const override { return d; }
+  std::string name() const override { return "FP32Quantizer"; }
 
-  void train(const float* data, int64_t n) {
-    codes = (char*)alloc2M(n * code_size);
-    for (int64_t i = 0; i < n; ++i) {
-      encode(data + i * d, get_data(i));
-    }
-  }
+  const char* get_data(size_t index) const override;
+  char* get_data(size_t index) override;
 
-  void encode(const float* from, char* to) { std::memcpy(to, from, d * 4); }
+  // 距离计算
+  float compute_distance(const float* a, const float* b) const;
+  void encode_query(const float* query) override;
+  float compute_query_distance(size_t index) const override;
+  float compute_query_distance(const float* code) const override;
 
-  char* get_data(int u) const { return codes + u * code_size; }
+  void prefetch_data(size_t index, int lines = 1) const;
 
+  // 重排序接口，模板函数定义在头文件中
   template <typename Pool>
-  void reorder(const Pool& pool, const float*, int* dst, int k) const {
+  inline void reorder(const Pool& pool, const float* query, int* dst,
+                      int k) const {
     for (int i = 0; i < k; ++i) {
       dst[i] = pool.id(i);
     }
   }
 
-  template <int DALIGN = do_align(DIM, kAlign)>
-  struct Computer {
-    using dist_type = float;
-    constexpr static auto dist_func = metric == Metric::L2 ? L2Sqr : IP;
-    const FP32Quantizer& quant;
-    float* q = nullptr;
-    Computer(const FP32Quantizer& quant, const float* query)
-        : quant(quant), q((float*)alloc64B(quant.d_align * 4)) {
-      std::memcpy(q, query, quant.d * 4);
-    }
-    ~Computer() { free(q); }
-    dist_type operator()(int u) const {
-      return dist_func(q, (data_type*)quant.get_data(u), quant.d);
-    }
-    void prefetch(int u, int lines) const {
-      mem_prefetch<prefetch_L1>(quant.get_data(u), lines);
-    }
-  };
-
-  auto get_computer(const float* query) const {
-    return Computer<>(*this, query);
-  }
+ private:
+  size_t d, d_align;
+  char* codes = nullptr;
+  std::unique_ptr<core::DistanceComputerTemplate<float>> distance_computer_;
 };
 
+}  // namespace quantization
 }  // namespace deepsearch

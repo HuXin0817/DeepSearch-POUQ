@@ -51,4 +51,8 @@ inline void* alloc64B(size_t nbytes) {
   return p;
 }
 
+inline constexpr int64_t do_align(int64_t x, int64_t align) {
+  return (x + align - 1) / align * align;
+}
+
 }  // namespace deepsearch
